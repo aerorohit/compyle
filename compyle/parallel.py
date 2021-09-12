@@ -6,11 +6,16 @@ once and have it run on different execution backends.
 
 """
 
+from compyle import c_backend
 from functools import wraps
+from inspect import getmodule
+import operator
+from re import TEMPLATE
 from textwrap import wrap
 
 from mako.template import Template
 import numpy as np
+from pyopencl.array import arange
 
 from .config import get_config
 from .profile import profile
@@ -20,7 +25,33 @@ from .types import dtype_to_ctype
 
 from . import array
 
+pyb11_bind_elwise = '''
+PYBIND11_MODULE(${name}, m) {
+    
+    m.def("${name}", [](${pyb11_args}){
+        return elwise_${name}(${pyb11_call});
+    });
+}
+'''
 
+pyb11_setup_header = '''
+<%
+cfg['compiler_args'] = ['-std=c++11', '-fopenmp']
+cfg['linker_args'] = ['-fopenmp']
+setup_pybind11(cfg)
+%>
+\n
+'''
+elementwise_pyb11_template = '''
+void ${name}(${arguments}){
+    %if openmp:
+        #pragma omp parallel for
+    %endif
+        for(size_t i = 0; i < SIZE; i++){
+            ${operations}; 
+        }
+}
+'''
 elementwise_cy_template = '''
 from cython.parallel import parallel, prange
 
@@ -503,6 +534,58 @@ class ElementwiseBase(object):
             # FIXME: it is difficult to get the sources from pycuda.
             self.all_source = self.source
             return knl
+        elif self.backend == 'C':
+            import cppimport
+            import os
+            import sys
+
+            self.pyb11_backend = c_backend.CBackend()
+            py_data, c_data = self.pyb11_backend.get_func_signature_pyb11(self.func)
+            pyb11_args = ', '.join(py_data[0][1:])
+            size = '{arg}.request().size'.format(arg = c_data[1][1])
+            pyb11_call = ', '.join([size] +py_data[1][1:])
+            c_defn = ['size_t SIZE'] + c_data[0][1:]
+            arguments = ', '.join(c_defn)
+            name = self.func.__name__
+            expr = '{func}({args})'.format(
+                func=name,
+                args=', '.join(c_data[1])
+            )
+
+            openmp= self._config.use_openmp
+
+            templete_elwise = Template(elementwise_pyb11_template)
+            src_elwise = templete_elwise.render(
+                name = self.name,
+                arguments = arguments,
+                openmp= openmp,
+                operations = expr
+            )
+
+            template = Template(pyb11_bind_elwise)
+            src_bind = template.render(
+                name = name,
+                pyb11_args = pyb11_args,
+                pyb11_call = pyb11_call
+            )
+            
+
+            self.source = self.tp.get_code()
+            if openmp:
+                self.source = '#include <omp.h>\n' + self.source
+            self.all_source = pyb11_setup_header + self.source + '\n' + src_elwise + '\n' + src_bind
+
+            # print(self.all_source)
+            # exit()
+            cppfile = open(name + '.cpp', 'w')
+            cppfile.write(self.all_source)
+            cppfile.close()
+            sys.path.append(os.getcwd())
+            fn = cppimport.imp(name)
+            knl = getattr(fn, name)
+            return knl
+
+
 
     def _correct_opencl_address_space(self, c_data):
         code = self.tp.blocks[-1].code.splitlines()
@@ -552,7 +635,8 @@ class ElementwiseBase(object):
             self.c_func(*c_args, **kw)
             event.record()
             event.synchronize()
-
+        elif self.backend == 'C':
+            self.c_func(*c_args)
 
 class Elementwise(object):
     def __init__(self, func, backend=None):
