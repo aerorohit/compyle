@@ -155,6 +155,13 @@ class Config(object):
     def _wgs_default(self):
         return 32
 
+    def __repr__(self):
+        out = ''
+        temp = vars(self)
+        for item in temp:
+            out += str(item) + ': ' + str(temp[item]) + '\n'
+        return out
+
 
 _config = None
 

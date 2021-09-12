@@ -4,8 +4,9 @@ from .config import get_config
 from .cython_generator import get_parallel_range, CythonGenerator
 from .transpiler import Transpiler, convert_to_float_if_needed
 from .types import dtype_to_ctype, annotate
-from .parallel import Scan
 from .template import Template
+from .parallel import Scan
+from . import parallel
 
 from . import array
 
@@ -63,7 +64,7 @@ def radix_sort(ary_list, out_list=None, max_key_bits=None, backend=None):
     # kernel
     output_sort_bit = OutputSortBit('output_sort_bit', len(ary_list))
 
-    sort_bit_knl = Scan(input_sort_bit, output_sort_bit.function,
+    sort_bit_knl = parallel.Scan(input_sort_bit, output_sort_bit.function,
                         'a+b', dtype=keys.dtype, backend=backend)
 
     for bit_number in range(max_key_bits):

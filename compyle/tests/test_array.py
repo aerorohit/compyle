@@ -1,14 +1,18 @@
 import pytest
 import numpy as np
 
-from ..array import Array
-from ..config import get_config
+from ..array import Array, wrap_array
+from ..config import Config, get_config
 import compyle.array as array
+
+from compyle import config
 
 
 check_all_backends = pytest.mark.parametrize('backend',
                                              ['cython', 'opencl', 'cuda'])
 
+check_all_dtypes = pytest.mark.parametrize('dtype',
+                                             [np.int32, np.float32, np.float64])
 
 def make_dev_array(backend, n=16):
     dev_array = Array(np.int32, n=n, backend=backend)
@@ -360,3 +364,107 @@ def test_cumsum(backend):
     # Then
     out.pull()
     assert np.all(out.data == np.cumsum(a.data))
+
+
+@check_all_backends
+@check_all_dtypes
+def test_gt2(backend, dtype):
+    check_import(backend)
+    if dtype == np.float64:
+        Config.use_double = True
+        # con = Config()
+        # con.use_double = True
+        # config.set_config(Config())
+
+    x = array.arange(0., 10., 1., dtype=np.float64, backend=backend)
+    out = np.array([0, 0, 0, 0, 0, 0, 1, 1, 1, 1], dtype=int)
+    comp = x > 5
+    assert np.all(comp.get() == out)
+
+@check_all_backends
+def test__gt__(backend):
+    check_import(backend)
+    dtypes = [np.int32, np.float32, np.float64]
+    for dtype in dtypes:
+        if dtype == np.float64:
+            Config.use_double == True
+
+        x = array.arange(0, 10, 1, dtype=dtype, backend=backend)
+        y = wrap_array(np.array([0, 0, 0, 0, 0, 0, 1, 1, 1, 1], dtype=dtype), backend=backend)
+        assert(x > 5 == y)
+        
+
+@check_all_backends
+def test__ge__(backend):
+    check_import(backend)
+    dtypes = [np.int32, np.float32, np.float64]
+    for dtype in dtypes:
+        if dtype == np.float64:
+            Config.use_double == True
+
+        x = array.arange(0, 10, 1, dtype=dtype, backend=backend)
+        y = wrap_array(np.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1], dtype=dtype), backend=backend)
+        assert(x >= 5 == y)
+
+
+@check_all_backends
+def test__lt__(backend):
+    check_import(backend)
+    dtypes = [np.int32, np.float32, np.float64]
+    for dtype in dtypes:
+        if dtype == np.float64:
+            Config.use_double == True
+
+        x = array.arange(0, 10, 1, dtype=dtype, backend=backend)
+        y = wrap_array(np.array([1, 1, 1, 1, 1, 0, 0, 0, 0, 0], dtype=dtype), backend=backend)
+        assert(x < 5 == y)
+        
+
+@check_all_backends
+def test__le__(backend):
+    check_import(backend)
+    dtypes = [np.int32, np.float32, np.float64]
+    for dtype in dtypes:
+        if dtype == np.float64:
+            Config.use_double == True
+
+        x = array.arange(0, 10, 1, dtype=dtype, backend=backend)
+        y = wrap_array(np.array([1, 1, 1, 1, 1, 1, 0, 0, 0, 0], dtype=dtype), backend=backend)
+        assert(x <= 5 == y)
+
+
+
+@check_all_backends
+def test__eq__(backend):
+    check_import(backend)
+    dtypes = [np.int32, np.float32, np.float64]
+    for dtype in dtypes:
+        if dtype == np.float64:
+            Config.use_double == True
+
+        x = array.arange(0, 10, 1, dtype=dtype, backend=backend)
+        y = wrap_array(np.array([0, 0, 0, 0, 0, 1, 0, 0, 0, 0], dtype=dtype), backend=backend)
+        assert(x == 5 == y)
+
+
+
+@check_all_backends
+def test__ne__(backend):
+    check_import(backend)
+    dtypes = [np.int32, np.float32, np.float64]
+    for dtype in dtypes:
+        if dtype == np.float64:
+            Config.use_double == True
+
+        x = array.arange(0, 10, 1, dtype=dtype, backend=backend)
+        y = wrap_array(np.array([1, 1, 1, 1, 1, 0, 1, 1, 1, 1], dtype=dtype), backend=backend)
+        assert(x != 5 == y)
+
+
+@check_all_backends
+def test_where(backend):
+    check_import(backend)
+    a = array.arange(0, 10, 1, backend = backend)
+    b = array.arange(10, 20, 1, backend = backend)
+    out = wrap_array(np.array([10, 11,12,13,14, 15, 6, 7, 8, 9]))
+    array.where(a > 5, a, b)
