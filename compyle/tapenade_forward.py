@@ -1,3 +1,4 @@
+from operator import mod
 import pybind11
 import cppimport
 import inspect
@@ -6,6 +7,8 @@ import functools
 import re
 import numpy as np
 from mako.template import Template
+
+from compyle.pushpop_c import PUSHPOP_C
 
 from .profile import profile
 from .translator import CConverter
@@ -29,11 +32,33 @@ namespace py = pybind11;
 \n
 '''
 
+pyb11_setup_header_rev = '''
+<%
+cfg['linker_args'] = ['/home/rohit/Documents/Pypr/compyle/compyle/tapenade_src/adBuffer.o', '/home/rohit/Documents/Pypr/compyle/compyle/tapenade_src/adStack.o']
+setup_pybind11(cfg)
+%>
+
+// c code for with PyBind11 binding
+#include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
+#include <pybind11/stl.h>
+namespace py = pybind11;
+
+\n
+'''
+
 pyb11_wrap_template = '''
 PYBIND11_MODULE(${name}_fdiff, m) {
-    
-    m.def("${name}${func_suffix}", [](${pyb_call}){
-        return ${name}_d(${c_call});
+    m.def("${name}${FUNC_SUFFIX_F}", [](${pyb_call}){
+        return ${name}${FUNC_SUFFIX_F}(${c_call});
+    });
+}
+'''
+
+pyb11_wrap_template_rev = '''
+PYBIND11_MODULE(${name}_rdiff, m) {
+    m.def("${name}${FUNC_SUFFIX_F}", [](${pyb_call}){
+        return ${name}${FUNC_SUFFIX_F}(${c_call});
     });
 }
 '''
@@ -52,8 +77,11 @@ void elementwise_${fn_name}(size_t SIZE, ${fn_args})
     }
 }
 '''
-VAR_SUFFIX = '__d'
-FUNC_SUFFIX = '_d'
+VAR_SUFFIX_F = '__d'
+FUNC_SUFFIX_F = '_d'
+
+VAR_SUFFIX_R = '__b'
+FUNC_SUFFIX_R = '_b'
 
 
 def get_source(f):
@@ -78,7 +106,12 @@ def sig_to_c_call(par, typ):
     return call
 
 
-def get_diff_signature(f, active):
+def get_diff_signature(f, active, mode='forward'):
+    if mode == 'forward':
+        VAR_SUFFIX = VAR_SUFFIX_F
+    elif mode == 'reverse':
+        VAR_SUFFIX = VAR_SUFFIX_R
+
     sig = inspect.signature(f)
     pyb_c = []
     pyb_py = []
@@ -93,16 +126,18 @@ def get_diff_signature(f, active):
             pure_c.append(["{typ} {i}".format(typ=typ, i=s)])
             pure_py.append([s])
         else:
+            typstar = typ if typ[-1] == '*' else typ + '*'
             pyb_py.append([
                 sig_to_pyb_call(s, typ),
-                sig_to_pyb_call(s + VAR_SUFFIX, typ)
+                sig_to_pyb_call(s + VAR_SUFFIX, typstar)
             ])
-            pyb_c.append(
-                [sig_to_c_call(s, typ),
-                 sig_to_c_call(s + VAR_SUFFIX, typ)])
+            pyb_c.append([
+                sig_to_c_call(s, typ),
+                sig_to_c_call(s + VAR_SUFFIX, typstar)
+            ])
             pure_c.append([
                 "{typ} {i}".format(typ=typ, i=s),
-                "{typ} {i}".format(typ=typ, i=s + VAR_SUFFIX)
+                "{typ} {i}".format(typ=typstar, i=s + VAR_SUFFIX)
             ])
             pure_py.append([s, s + VAR_SUFFIX])
 
@@ -115,10 +150,13 @@ def get_diff_signature(f, active):
 
 
 class Grad_Base:
-    def __init__(self, func, active, mode='forward', backend='tapenade'):
+    def __init__(self, func, wrt, gradof, mode='forward', backend='tapenade'):
         self.backend = backend
         self.func = func
-        self.active = active
+        self.args = None
+        self.wrt = wrt
+        self.gradof = gradof
+        self.active = wrt + gradof
         self.mode = mode
         self.name = func.__name__
         self._config = get_config()
@@ -128,20 +166,30 @@ class Grad_Base:
         self.tapenade_op = 'Not yet generated'
         self.c_func = self.c_gen_error
         self._get_sources()
-        
+
     def _get_sources(self):
+
         self.source = get_source(self.func)
         with open(self.name + '.c', 'w') as f:
             f.write(self.source)
-
+            
         if self.mode == 'forward':
             command = [
-                "tapenade", "{}.c".format(self.name), "-d",
-                "-o {}_forward_diff ".format(self.name),
-                "-tgtvarname {}".format(VAR_SUFFIX),
-                "-tgefuncname {}".format(FUNC_SUFFIX)
+                "tapenade", f"{self.name}.c", "-d", "-o",
+                f"{self.name}_forward_diff", "-tgtvarname",
+                f"{VAR_SUFFIX_F}", "-tgtfuncname",
+                f"{FUNC_SUFFIX_F}",
+                "-head", f'{self.name}({" ".join(self.wrt)})\({" ".join(self.gradof)})'
             ]
-
+        elif self.mode == 'reverse':
+            command = [
+                "tapenade", f"{self.name}.c", "-b", "-o",
+                f"{self.name}_reverse_diff", "-tgtvarname",
+                f"{VAR_SUFFIX_R}", "-tgtfuncname",
+                f"{FUNC_SUFFIX_R}",
+                "-head", f'{self.name}({" ".join(self.wrt)})\({" ".join(self.gradof)})'
+            ]
+        
         op_tapenade = ""
         try:
             proc = subprocess.run(command, capture_output=True, text=True)
@@ -149,15 +197,21 @@ class Grad_Base:
         except:
             raise RuntimeError(
                 "Encountered errors while differentiating through Tapenade.")
-
         self.tapenade_op = op_tapenade
+        print(" ".join(command))
+        # print(op_tapenade)
 
-        with open(self.name + "_forward_diff_d.c", 'r') as f:
+        if self.mode == 'forward':
+            f_extn = "_forward_diff_d.c"
+        elif self.mode == 'reverse':
+            f_extn = "_reverse_diff_b.c"
+
+        with open(self.name + f_extn, 'r') as f:
             self.grad_source = f.read()
-    
+
     def c_gen_error(*args):
         raise RuntimeError("Differentiated function not yet generated")
-    
+
     def _massage_arg(self, x):
         if isinstance(x, array.Array):
             return x.dev
@@ -173,32 +227,42 @@ class Grad_Base:
         if self.backend == 'tapenade':
             self.c_func(*c_args)
 
-        if self.backend == 'cuda':
+        elif self.backend == 'cuda':
             import pycuda.driver as drv
             event = drv.Event()
             self.c_func(*c_args, **kw)
             event.record()
             event.synchronize()
 
-        if self.backend == 'c':
+        elif self.backend == 'c':
             self.c_func(*c_args)
-            
+
+        else:
+            raise RuntimeError("Given backend not supported, got '{}'".format(
+                self.backend))
+
 
 class Forward_grad(Grad_Base):
-    def __init__(self, func, active):
-        super(Forward_grad, self).__init__(func, active, mode='forward', backend='tapenade')
+    def __init__(self, func, wrt, gradof):
+        super(Forward_grad, self).__init__(func,
+                                           wrt,
+                                           gradof,
+                                           mode='forward',
+                                           backend='tapenade')
         self.c_func = self.get_c_forward_diff()
 
     def get_c_forward_diff(self):
         self.grad_source = pyb11_setup_header + self.grad_source
 
-        pyb_all, c_all, _, _ = get_diff_signature(self.func, self.active)
+        pyb_all, c_all, _, _ = get_diff_signature(self.func,
+                                                  self.active,
+                                                  mode='forward')
         pyb_call = ", ".join(pyb_all)
         c_call = ", ".join(c_all)
 
         pyb_temp = Template(pyb11_wrap_template)
         pyb_bind = pyb_temp.render(name=self.name,
-                                   func_suffix=FUNC_SUFFIX,
+                                   FUNC_SUFFIX_F=FUNC_SUFFIX_F,
                                    pyb_call=pyb_call,
                                    c_call=c_call)
 
@@ -209,41 +273,24 @@ class Forward_grad(Grad_Base):
 
         module = cppimport.imp(self.name + '_fdiff')
 
-        return getattr(module, self.name + FUNC_SUFFIX)
-
-    
+        return getattr(module, self.name + FUNC_SUFFIX_F)
 
 
-class Elementwise_Grad:
-    def __init__(self, func, active, backend='c'):
-        self.backend = backend
-        self.func = func
-        self.active = active
-        self.name = func.__name__
+class Elementwise_Grad(Grad_Base):
+    def __init__(self, func, wrt, gradof, backend='c'):
+        super(Elementwise_Grad, self).__init__(func,
+                                               wrt,
+                                               gradof,
+                                               mode='forward',
+                                               backend=backend)
         self._config = get_config()
-        self.source = 'Not yet generated'
-        self.grad_source = 'Not yet generated'
-        self.grad_all_source = 'Not yet generated'
         self.c_func = self._generate()
 
     def _generate(self):
-        self.source = get_source(self.func)
-        with open(self.name + '.c', 'w') as f:
-            f.write(self.source)
-        command = "tapenade {name}.c -d -o {name}_forward_diff".format(
-            name=self.name)
-        os.system(command)
-
-        with open(self.name + "_forward_diff_d.c", 'r') as f:
-            self.grad_source = f.read()
-
-        if self.backend == 'cython':
-            raise NotImplementedError(
-                'Cython elementwise is not yet implemented')
+        if self.backend == 'c':
+            return self._c_gen()
         elif self.backend == 'cuda':
             return self._cuda_gen()
-        elif self.backend == 'c':
-            return self._c_gen()
 
     def _c_gen(self):
         pyb_args, pyb_c_args, py_args, c_args = get_diff_signature(
@@ -252,7 +299,7 @@ class Elementwise_Grad:
         c_templt = Template(c_backend_template)
         c_code = c_templt.render(c_kernel_defn=self.grad_source,
                                  fn_name='{fname}{suff}'.format(
-                                     fname=self.name, suff=FUNC_SUFFIX),
+                                     fname=self.name, suff=FUNC_SUFFIX_F),
                                  fn_args=", ".join(c_args[1:]),
                                  fn_call=", ".join(py_args[1:]),
                                  openmp=self._config.use_openmp)
@@ -260,7 +307,7 @@ class Elementwise_Grad:
         elwise_name = 'elementwise_' + self.name
         size = "{}.request().size".format(py_args[1])
         pyb_code = pyb_templt.render(name=elwise_name,
-                                     func_suffix=FUNC_SUFFIX,
+                                     FUNC_SUFFIX_F=FUNC_SUFFIX_F,
                                      pyb_call=", ".join(pyb_args[1:]),
                                      c_call=", ".join([size] + pyb_c_args[1:]))
         self.grad_all_source = pyb11_setup_header + c_code + pyb_code
@@ -269,7 +316,7 @@ class Elementwise_Grad:
             f.write(self.grad_all_source)
 
         module = cppimport.imp(elwise_name + '_fdiff')
-        return getattr(module, elwise_name + FUNC_SUFFIX)
+        return getattr(module, elwise_name + FUNC_SUFFIX_F)
 
     def _cuda_gen(self):
         from .cuda import set_context
@@ -280,7 +327,7 @@ class Elementwise_Grad:
         _, _, py_args, c_args = get_diff_signature(self.func, self.active)
 
         self.grad_source = self.convert_to_device_code(self.grad_source)
-        expr = '{func}({args})'.format(func=self.name + FUNC_SUFFIX,
+        expr = '{func}({args})'.format(func=self.name + FUNC_SUFFIX_F,
                                        args=", ".join(py_args))
 
         arguments = convert_to_float_if_needed(", ".join(c_args[1:]))
@@ -295,28 +342,66 @@ class Elementwise_Grad:
         self.grad_all_source = cluda_preamble + preamble
         return knl
 
-    def _massage_arg(self, x):
-        if isinstance(x, array.Array):
-            return x.dev
-        elif self.backend != 'cuda' or isinstance(x, np.ndarray):
-            return x
-        else:
-            return np.asarray(x)
-
-    @profile
-    def __call__(self, *args, **kw):
-        c_args = [self._massage_arg(x) for x in args]
-        if self.backend == 'cuda':
-            import pycuda.driver as drv
-            event = drv.Event()
-            self.c_func(*c_args, **kw)
-            event.record()
-            event.synchronize()
-        if self.backend == 'c':
-            self.c_func(*c_args)
-
     def convert_to_device_code(self, code):
         code = re.sub(r'\bvoid\b', 'WITHIN_KERNEL void', code)
         code = re.sub(r'\bfloat\b', 'GLOBAL_MEM float ', code)
         code = re.sub(r'\bdouble\b', 'GLOBAL_MEM double ', code)
         return code
+
+
+class Reverse_Grad(Grad_Base):
+    def __init__(self, func, wrt, gradof, backend='tapenade'):
+        super().__init__(func, wrt, gradof, mode='reverse', backend=backend)
+        self.c_func = self._c_reverse_diff()
+
+    def _c_reverse_diff(self):
+        from .pushpop_c import PUSHPOP_C
+        self.correct_headers()
+        self.grad_source = pyb11_setup_header_rev + self.grad_source
+
+        pyb_all, c_all, self.args, _ = get_diff_signature(self.func,
+                                                  self.active,
+                                                  mode=self.mode)
+        pyb_call = ", ".join(pyb_all)
+        c_call = ", ".join(c_all)
+
+        pyb_temp = Template(pyb11_wrap_template_rev)
+        pyb_bind = pyb_temp.render(name=self.name,
+                                   FUNC_SUFFIX_F=FUNC_SUFFIX_R,
+                                   pyb_call=pyb_call,
+                                   c_call=c_call)
+
+        self.grad_all_source = self.grad_source + pyb_bind
+
+
+        with open(self.name + "_rdiff.cpp", 'w') as f:
+            f.write(self.grad_all_source)
+
+        module = cppimport.imp(self.name + '_rdiff')
+
+        return getattr(module, self.name + FUNC_SUFFIX_R)
+
+    def correct_headers(self):
+        # self.grad_source = re.sub(r'#include <adBuffer.h>', PUSHPOP_C,
+                                #   self.grad_source)
+        self.grad_source = re.sub(r'#include <adBuffer.h>', 
+                                  '#include "/home/rohit/Documents/Pypr/'
+                                  'compyle/compyle/tapenade_src/adBuffer.h"', 
+                                  self.grad_source)
+
+class Grad(Reverse_Grad):
+    def __init__(self, func, wrt, gradof, backend='tapenade'):
+        super().__init__(func, wrt, gradof, backend=backend)
+        self.test()
+    
+    def test(self, *args):
+        call_ar = []
+        for i, arg in enumerate(args):
+            call_ar.append[arg]
+            if self.args[i] in self.active:
+                call_ar.append(np.zeros_like(arg))
+        
+        print(self.args)
+        for i in call_ar:
+            print(i)
+        # self.c_func(*call_ar)
