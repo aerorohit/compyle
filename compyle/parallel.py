@@ -534,7 +534,7 @@ class ElementwiseBase(object):
             # FIXME: it is difficult to get the sources from pycuda.
             self.all_source = self.source
             return knl
-        elif self.backend == 'C':
+        elif self.backend == 'c':
             import cppimport
             import os
             import sys
@@ -635,7 +635,7 @@ class ElementwiseBase(object):
             self.c_func(*c_args, **kw)
             event.record()
             event.synchronize()
-        elif self.backend == 'C':
+        elif self.backend == 'c':
             self.c_func(*c_args)
 
 class Elementwise(object):

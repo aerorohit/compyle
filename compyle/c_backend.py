@@ -17,33 +17,8 @@ class CBackend(CythonGenerator):
         super(CBackend, self).__init__()
         # self.function_address_space = 'WITHIN_KERNEL '
 
-    def add_pybind11_func(self, node):
-        args = self._get_function_args(node)
-        name = node.body[0].name
-        doc = ''
-        template = Template(pybind11_wrap_fn)
-        src = template.render(
-            name = name,
-            doc = doc
-        )
-        return src
 
     def get_func_signature_pyb11(self, func):
-        """Given a function that is wrapped, return the Python wrapper
-        definition signature and the Python call signature and the C
-        wrapper definition and C call signature using pybind11's buffer protocol.
-
-        For example if we had
-
-        def f(x=1, y=[1.0]):
-            pass
-
-        If this were passed we would get back:
-
-        (['int x', 'double[:] y'], ['x', '&y[0]']),
-        (['int x', 'double * y'], ['x', 'y'])
-
-        """
         sourcelines = getsourcelines(func)[0]
         defn, lines = get_func_definition(sourcelines)
         f_name, returns, args = self._analyze_method(func, lines)

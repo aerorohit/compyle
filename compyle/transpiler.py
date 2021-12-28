@@ -189,7 +189,7 @@ class Transpiler(object):
 
             ''')
 
-        elif backend == 'C':
+        elif backend == 'c':
             self._cgen = CConverter()
             self.header = dedent('''
                 // c code for with PyBind11 binding
@@ -289,7 +289,7 @@ class Transpiler(object):
                 obj, declarations=declarations.get(obj.__name__)
                 if declarations else None)
 
-        elif self.backend == 'C':
+        elif self.backend == 'c':
             code = self._cgen.parse(
                 obj, declarations=declarations.get(obj.__name__)
                 if declarations else None)
