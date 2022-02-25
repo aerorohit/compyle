@@ -61,6 +61,84 @@ class CBackend(CythonGenerator):
 
 
 
+reduction_c_template = '''
+int combine(int a, int b){
+    return ${red_expr};
+}
+
+template<typename T>
+T reduce_one_ar(int offset, int n, T initial_val, T* ary){
+    T a, b, temp;
+    temp = initial_val;
+
+    for (int i = offset; i < (n + offset); i++){
+        a = temp;
+        b = ary[i];
+
+        temp = combine(a, b);
+    }
+    return temp;
+}
+
+template<typename T>
+T reduce(int offset, int n, T initial_val${args_extra}){
+    T a, b, temp;
+    temp = initial_val;
+
+    for (int i = offset; i < (n + offset); i++){
+        a = temp;
+        b = ${map_expr};
+
+        temp = combine(a, b);
+    }
+    return temp;
+}
+
+
+template <typename T>
+T reduce_all(long N, T initial_val${args_extra}){
+    T ans = initial_val;
+    if (N > 0){
+        %if openmp:
+        int ntiles = omp_get_max_threads();
+        %else:
+        int ntiles = 1;
+        %endif
+        T* stage1_res = new T[ntiles];
+
+        #pragma omp parallel
+        {
+            // Step 1 - reducing each tile
+            %if openmp:
+            int itile = omp_get_thread_num();
+            %else:
+            int itile = 0;
+            %endif
+            int last_tile = ntiles - 1;
+            int tile_size = (N / ntiles);
+            int last_tile_size = N - tile_size * last_tile;
+            int cur_tile_size = itile == ntiles - 1 ? last_tile_size : tile_size;
+            int cur_start_idx = itile * tile_size;
+
+            stage1_res[itile] = reduce<T>(cur_start_idx, cur_tile_size, initial_val${call_extra});
+            #pragma omp barrier
+
+            #pragma omp single
+            ans = reduce_one_ar<T>(0, ntiles, initial_val, stage1_res);
+        }
+        delete[] stage1_res;
+    }
+    return ans;
+}
+
+PYBIND11_MODULE(${name}, m) {
+    m.def("${name}", [](long n, ${type} initial${pyb_args}){
+        return reduce_all(n, initial${pyb_call});
+    });
+}
+
+'''
+
 scan_c_template = '''
 int combine(int a, int b){
     return ${scan_expr};
@@ -69,7 +147,7 @@ int combine(int a, int b){
 
 template<typename T>
 T reduce( T* ary, int offset, int n, T initial_val${args_in_extra}){
-    int a, b, temp;
+    T a, b, temp;
     temp = initial_val;
 
     for (int i = offset; i < (n + offset); i++){
@@ -84,7 +162,7 @@ T reduce( T* ary, int offset, int n, T initial_val${args_in_extra}){
 template <typename T>
 void excl_scan_wo_ip_exp( T* ary, T* out, int N, T initial_val){
     if (N > 0){
-        int a, b, temp;
+        T a, b, temp;
         temp = initial_val;
         
         for (int i = 0; i < N - 1; i++){
@@ -101,7 +179,7 @@ void excl_scan_wo_ip_exp( T* ary, T* out, int N, T initial_val){
 template <typename T>
 void incl_scan( T* ary, int offset, int cur_buf_size, int N, T initial_val${args_extra}){
     if (N > 0){
-        int a, b, carry, prev_item, item;
+        T a, b, carry, prev_item, item;
         carry = initial_val;
 
         for (int i = offset; i < (cur_buf_size + offset); i++){

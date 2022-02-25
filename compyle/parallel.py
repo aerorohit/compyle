@@ -736,6 +736,60 @@ class ReductionBase(object):
             self.tp.compile()
             self.all_source = self.tp.source
             return getattr(self.tp.mod, 'py_' + self.name)
+        elif self.backend == 'c':
+            self.pyb11_backend = c_backend.CBackend()
+            if self.func is not None:
+                self.tp.add(self.func, declarations=declarations)
+                pyb_data, c_data = self.pyb11_backend.get_func_signature_pyb11(
+                    self.func)
+                c_call = c_data[1]
+
+                c_call_default = ['N', 'neutral']
+                predefined_vars = ['i'] + c_call_default
+                c_args_extra = [[], []]
+                pyb_args_extra = [[], []]
+                for i, var in enumerate(c_call[1:]):
+                    if var not in predefined_vars:
+                        c_args_extra[0].append(c_data[0][i + 1])
+                        c_args_extra[1].append(var)
+                        pyb_args_extra[0].append(pyb_data[0][i + 1])
+                        pyb_args_extra[1].append(pyb_data[1][i + 1])
+                c_args_extra_str = ", " + ', '.join(c_args_extra[0])
+                c_call_extra_str = ", " + ', '.join(c_args_extra[1])
+                pyb_args_extra_str = ", " + ', '.join(pyb_args_extra[0])
+                pyb_call_extra_str = ", " + ', '.join(pyb_args_extra[1])
+                map_expr = f"{self.func.__name__}({', '.join(c_call)})"
+            else:
+                c_args_extra_str = f", {self.type + '*'} in"
+                c_call_extra_str = ", in"
+                pyb_args_extra_str = f", {self.pyb11_backend.ctype_to_pyb11(self.type + '*')} in"
+                pyb_call_extra_str = f", ({self.type}*) in.request().ptr"
+                map_expr = "in[i]"
+            self.source = self.tp.get_code()
+            openmp = self._config.use_openmp
+            if openmp:
+                self.source = '#include <omp.h>\n' + self.source
+
+            template_red = Template(c_backend.reduction_c_template)
+            src_red = template_red.render(
+                args_extra=c_args_extra_str,
+                call_extra=c_call_extra_str,
+                map_expr=map_expr,
+                red_expr=self.reduce_expr,
+                name=self.name,
+                type=self.type,
+                pyb_args=pyb_args_extra_str,
+                pyb_call=pyb_call_extra_str,
+                openmp=openmp
+            )
+            self.all_source = self.source + src_red
+
+            extra_comp_args = ["-fopenmp", "-fPIC"] if openmp else []
+            mod = Cmodule(self.name, self.all_source, extra_inc_dir=[pybind11.get_include(
+            )], extra_compile_args=extra_comp_args, extra_link_args=extra_comp_args)
+            module = mod.load()
+            return getattr(module, self.name)
+
         elif self.backend == 'opencl':
             if self.func is not None:
                 self.tp.add(self.func, declarations=declarations)
@@ -889,6 +943,12 @@ class ReductionBase(object):
             event.record()
             event.synchronize()
             return result.get()
+        elif self.backend == 'c':
+            size = len(c_args[0])
+            c_args.insert(0, json.loads(self.neutral))
+            c_args.insert(0, size)
+            return self.c_func(*c_args)
+            pass
 
 
 class Reduction(object):
