@@ -1,4 +1,5 @@
 from operator import mod
+from tabnanny import verbose
 import pybind11
 import cppimport
 import inspect
@@ -17,12 +18,17 @@ from .transpiler import Transpiler, convert_to_float_if_needed
 from . import array
 from compyle.api import get_config
 
+from .ext_module import ExtModule
+from .cimport import Cmodule, get_tpnd_obj_dir, compile_tapenade_source
+
+import compyle
+
+# <%
+# cfg['compiler_args'] = ['-std=c++11', '-fopenmp']
+# cfg['linker_args'] = ['-fopenmp']
+# setup_pybind11(cfg)
+# %>
 pyb11_setup_header = '''
-<%
-cfg['compiler_args'] = ['-std=c++11', '-fopenmp']
-cfg['linker_args'] = ['-fopenmp']
-setup_pybind11(cfg)
-%>
 
 // c code for with PyBind11 binding
 #include <pybind11/pybind11.h>
@@ -31,12 +37,12 @@ namespace py = pybind11;
 
 \n
 '''
+# <%
+# cfg['linker_args'] = ['/home/rohit/Documents/Pypr/compyle/compyle/tapenade_src/adBuffer.o', '/home/rohit/Documents/Pypr/compyle/compyle/tapenade_src/adStack.o']
+# setup_pybind11(cfg)
+# %>
 
 pyb11_setup_header_rev = '''
-<%
-cfg['linker_args'] = ['/home/rohit/Documents/Pypr/compyle/compyle/tapenade_src/adBuffer.o', '/home/rohit/Documents/Pypr/compyle/compyle/tapenade_src/adStack.o']
-setup_pybind11(cfg)
-%>
 
 // c code for with PyBind11 binding
 #include <pybind11/pybind11.h>
@@ -149,7 +155,7 @@ def get_diff_signature(f, active, mode='forward'):
     return pyb_py_all, pyb_c_all, pure_py, pure_c
 
 
-class Grad_Base:
+class GradBase:
     def __init__(self, func, wrt, gradof, mode='forward', backend='tapenade'):
         self.backend = backend
         self.func = func
@@ -199,7 +205,6 @@ class Grad_Base:
                 "Encountered errors while differentiating through Tapenade.")
         self.tapenade_op = op_tapenade
         print(" ".join(command))
-        # print(op_tapenade)
 
         if self.mode == 'forward':
             f_extn = "_forward_diff_d.c"
@@ -242,9 +247,9 @@ class Grad_Base:
                 self.backend))
 
 
-class Forward_grad(Grad_Base):
+class ForwardGrad(GradBase):
     def __init__(self, func, wrt, gradof):
-        super(Forward_grad, self).__init__(func,
+        super(ForwardGrad, self).__init__(func,
                                            wrt,
                                            gradof,
                                            mode='forward',
@@ -271,14 +276,15 @@ class Forward_grad(Grad_Base):
         with open(self.name + "_fdiff.cpp", 'w') as f:
             f.write(self.grad_all_source)
 
-        module = cppimport.imp(self.name + '_fdiff')
+        
+        # module = cppimport.imp(self.name + '_fdiff')
+        mod = Cmodule(self.name + '_fdiff', self.grad_all_source, extra_inc_dir=[pybind11.get_include()])
+        return getattr(mod.load(), self.name + FUNC_SUFFIX_F)
+        
 
-        return getattr(module, self.name + FUNC_SUFFIX_F)
-
-
-class Elementwise_Grad(Grad_Base):
+class ElementwiseGrad(GradBase):
     def __init__(self, func, wrt, gradof, backend='c'):
-        super(Elementwise_Grad, self).__init__(func,
+        super(ElementwiseGrad, self).__init__(func,
                                                wrt,
                                                gradof,
                                                mode='forward',
@@ -349,14 +355,13 @@ class Elementwise_Grad(Grad_Base):
         return code
 
 
-class Reverse_Grad(Grad_Base):
+class ReverseGrad(GradBase):
     def __init__(self, func, wrt, gradof, backend='tapenade'):
         super().__init__(func, wrt, gradof, mode='reverse', backend=backend)
         self.c_func = self._c_reverse_diff()
 
     def _c_reverse_diff(self):
         from .pushpop_c import PUSHPOP_C
-        self.correct_headers()
         self.grad_source = pyb11_setup_header_rev + self.grad_source
 
         pyb_all, c_all, self.args, _ = get_diff_signature(self.func,
@@ -376,32 +381,17 @@ class Reverse_Grad(Grad_Base):
 
         with open(self.name + "_rdiff.cpp", 'w') as f:
             f.write(self.grad_all_source)
-
-        module = cppimport.imp(self.name + '_rdiff')
-
-        return getattr(module, self.name + FUNC_SUFFIX_R)
-
-    def correct_headers(self):
-        # self.grad_source = re.sub(r'#include <adBuffer.h>', PUSHPOP_C,
-                                #   self.grad_source)
-        self.grad_source = re.sub(r'#include <adBuffer.h>', 
-                                  '#include "/home/rohit/Documents/Pypr/'
-                                  'compyle/compyle/tapenade_src/adBuffer.h"', 
-                                  self.grad_source)
-
-class Grad(Reverse_Grad):
-    def __init__(self, func, wrt, gradof, backend='tapenade'):
-        super().__init__(func, wrt, gradof, backend=backend)
-        self.test()
-    
-    def test(self, *args):
-        call_ar = []
-        for i, arg in enumerate(args):
-            call_ar.append[arg]
-            if self.args[i] in self.active:
-                call_ar.append(np.zeros_like(arg))
+            
+        if not os.path.exists(os.path.join(get_tpnd_obj_dir(), 'adBuffer.o')) or not os.path.exists(os.path.join(get_tpnd_obj_dir(), 'adStack.o')):
+            compile_tapenade_source()
+            
+        mod = Cmodule(self.name + "_rdiff", self.grad_all_source, extra_inc_dir=[pybind11.get_include(), get_tpnd_obj_dir(), '/home/rohit/Documents/Pypr/compyle/compyle/tapenade_src'], extra_link_args=[os.path.join(get_tpnd_obj_dir(), 'adBuffer.o'), os.path.join(get_tpnd_obj_dir(), 'adStack.o')])
+        module = mod.load()
         
-        print(self.args)
-        for i in call_ar:
-            print(i)
-        # self.c_func(*call_ar)
+        return getattr(module, self.name + FUNC_SUFFIX_R)
+    
+
+class Grad(ReverseGrad):
+    def __init__(self, func, wrt, gradof, backend='tapenade'):
+        super().__init__(func, wrt, gradof, backend=backend)        
+            
