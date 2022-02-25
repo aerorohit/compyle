@@ -29,21 +29,6 @@ class CBackend(CythonGenerator):
         return src
 
     def get_func_signature_pyb11(self, func):
-        """Given a function that is wrapped, return the Python wrapper
-        definition signature and the Python call signature and the C
-        wrapper definition and C call signature using pybind11's buffer protocol.
-
-        For example if we had
-
-        def f(x=1, y=[1.0]):
-            pass
-
-        If this were passed we would get back:
-
-        (['int x', 'double[:] y'], ['x', '&y[0]']),
-        (['int x', 'double * y'], ['x', 'y'])
-
-        """
         sourcelines = getsourcelines(func)[0]
         defn, lines = get_func_definition(sourcelines)
         f_name, returns, args = self._analyze_method(func, lines)
@@ -74,3 +59,107 @@ class CBackend(CythonGenerator):
     def _get_self_type(self):
         return KnownType('GLOBAL_MEM %s*' % self._class_name)
 
+
+
+scan_c_template = '''
+int combine(int a, int b){
+    return ${scan_expr};
+}
+
+
+template<typename T>
+T reduce( T* ary, int offset, int n, T initial_val${args_in_extra}){
+    int a, b, temp;
+    temp = initial_val;
+
+    for (int i = offset; i < (n + offset); i++){
+        a = temp;
+        b = ${scan_input_expr_call};
+
+        temp = combine(a, b);
+    }
+    return temp;
+}
+
+template <typename T>
+void excl_scan_wo_ip_exp( T* ary, T* out, int N, T initial_val){
+    if (N > 0){
+        int a, b, temp;
+        temp = initial_val;
+        
+        for (int i = 0; i < N - 1; i++){
+            a = temp;
+            b = ary[i];
+            out[i] = temp;
+            temp = combine(a, b);
+        }
+        out[N - 1] = temp;
+    }
+}
+
+
+template <typename T>
+void incl_scan( T* ary, int offset, int cur_buf_size, int N, T initial_val${args_extra}){
+    if (N > 0){
+        int a, b, carry, prev_item, item;
+        carry = initial_val;
+
+        for (int i = offset; i < (cur_buf_size + offset); i++){
+            a = carry;
+            b = ${scan_input_expr_call};
+            prev_item = carry;
+            carry = combine(a, b);
+            item = carry;
+            
+            ${scan_output_expr_call};
+        }
+    }
+}
+
+
+template <typename T>
+void scan( T* ary, long N, T initial_val${args_extra}){
+    if (N > 0){
+        %if openmp:
+        int ntiles = omp_get_max_threads();
+        %else:
+        int ntiles = 1;
+        %endif
+        T* stage1_res = new T[ntiles];
+        T* stage2_res = new T[ntiles];
+
+        #pragma omp parallel
+        {
+            // Step 1 - reducing each tile
+            %if openmp:
+            int itile = omp_get_thread_num();
+            %else:
+            int itile = 0;
+            %endif
+            int last_tile = ntiles - 1;
+            int tile_size = (N / ntiles);
+            int last_tile_size = N - tile_size * last_tile;
+            int cur_tile_size = itile == ntiles - 1 ? last_tile_size : tile_size;
+            int cur_start_idx = itile * tile_size;
+
+            stage1_res[itile] = reduce<T>(ary, cur_start_idx, cur_tile_size, initial_val${call_in_extra});
+            #pragma omp barrier
+
+            #pragma omp single
+            excl_scan_wo_ip_exp<T>(stage1_res, stage2_res, ntiles, initial_val);
+
+            incl_scan<T>(ary, cur_start_idx, cur_tile_size, N, stage2_res[itile]${call_extra});
+        }
+        delete[] stage1_res;
+        delete[] stage2_res;
+    }
+}
+
+
+
+PYBIND11_MODULE(${name}, m) {
+    m.def("${name}", [](py::array_t<${type}> x, long n, ${type} initial${pyb_args}){
+        return scan((${type}*) x.request().ptr, n, initial${pyb_call});
+    });
+}
+'''
