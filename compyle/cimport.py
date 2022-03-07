@@ -71,6 +71,19 @@ def _save_checksum_trailer(ext_path, cur_checksum):
     with open(ext_path, "ab") as file:
         file.write(dump)
 
+def wget_tpnd_headers():
+    import requests
+    baseurl = 'https://gitlab.inria.fr/tapenade/tapenade/-/raw/3.16/ADFirstAidKit/'
+    files = ['adBuffer.c', 'adBuffer.h', 'adStack.c', 'adStack.h']
+    reqs = [requests.get(baseurl, file) for file in files]
+    saveloc = get_tpnd_obj_dir()
+    if not os.path.exists(saveloc):
+        os.mkdir(saveloc)
+    
+    for file, r in zip(files, reqs):
+        with open(join(saveloc, file), 'wb') as f:
+            f.write(r.content)
+    
 
 def get_tpnd_obj_dir():
     plat_dir = get_platform_dir()
@@ -82,6 +95,7 @@ def get_tpnd_obj_dir():
 def compile_tapenade_source(verbose=0):
     try:
         with CaptureMultipleStreams() as stream:
+            wget_tpnd_headers()
             os.environ["CC"]='g++'
             compiler = new_compiler(verbose=1)
             customize_compiler(compiler)
