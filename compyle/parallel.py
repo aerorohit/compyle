@@ -7,6 +7,7 @@ once and have it run on different execution backends.
 """
 
 from compyle import c_backend
+from compyle import c_backend
 from functools import wraps
 from textwrap import wrap
 
@@ -14,6 +15,7 @@ from mako.template import Template
 import numpy as np
 import pybind11
 
+from .cimport import Cmodule
 from .cimport import Cmodule
 from .config import get_config
 from .profile import profile
@@ -1060,6 +1062,8 @@ class ScanBase(object):
             return self._generate_cuda_kernel(declarations=declarations)
         elif self.backend == 'cython':
             return self._generate_cython_code(declarations=declarations)
+        elif self.backend == 'c':
+            return self._generate_c_code(declarations=declarations)
         elif self.backend == 'c':
             return self._generate_c_code(declarations=declarations)
 

@@ -9,7 +9,7 @@ from mako.template import Template
 from .config import get_config
 from .ast_utils import get_unknown_names_and_calls
 from .cython_generator import CythonGenerator, CodeGenerationError
-from .translator import OpenCLConverter, CUDAConverter, CConverter, literal_to_float
+from .translator import OpenCLConverter, CUDAConverter, CConverter
 from .ext_module import ExtModule
 from .extern import Extern, get_extern_code
 from .utils import getsourcelines
@@ -308,8 +308,11 @@ class Transpiler(object):
         cb = CodeBlock(code, code)
         self.blocks.append(cb)
 
-    def get_code(self):
-        code = [self.header] + [x.code for x in self.blocks]
+    def get_code(self, incl_header=True):
+        if incl_header:
+            code = [self.header] + [x.code for x in self.blocks]
+        else:
+            code = [x.code for x in self.blocks]
         return '\n'.join(code)
 
     def compile(self):
